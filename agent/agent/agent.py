@@ -1,4 +1,5 @@
 from typing import Annotated, List, Optional, Dict, Any
+import json
 
 from llama_index.core.workflow import Context
 from llama_index.llms.openai import OpenAI
@@ -16,6 +17,7 @@ def createItem(
     name: Annotated[Optional[str], "Optional item name."] = None,
 ) -> str:
     """Create a new canvas item and return its id."""
+    print(f"[DEBUG] createItem called with type={type}, name={name}")
     return f"createItem({type}, {name})"
 
 def deleteItem(
@@ -137,6 +139,9 @@ async def set_plan(
 ) -> Dict[str, Any]:
     """Initialize a plan consisting of step descriptions. Resets progress and sets status to 'in_progress'."""
     state: Dict[str, Any] = await ctx.get("state", default={})
+    # Debug: Log the current state to understand what's being received
+    print(f"[DEBUG] set_plan - Current state: {state}")
+    print(f"[DEBUG] set_plan - State items count: {len(state.get('items', []))}")
     plan_steps = [{"title": str(s), "status": "pending"} for s in (steps or [])]
     if plan_steps:
         plan_steps[0]["status"] = "in_progress"
@@ -186,6 +191,29 @@ async def update_plan_progress(
         return {"updated": True, "index": step_index, "status": status, "note": note}
     return {"updated": False, "index": step_index, "status": status, "note": note}
 
+
+async def debug_state(ctx: Context) -> Dict[str, Any]:
+    """Debug function to inspect current state."""
+    state: Dict[str, Any] = await ctx.get("state", default={})
+    items = state.get("items", [])
+    print(f"[DEBUG] debug_state - Full state keys: {list(state.keys())}")
+    print(f"[DEBUG] debug_state - Items count: {len(items)}")
+    print(f"[DEBUG] debug_state - Global title: {state.get('globalTitle', 'N/A')}")
+    print(f"[DEBUG] debug_state - itemsCreated: {state.get('itemsCreated', 0)}")
+    if items:
+        print(f"[DEBUG] debug_state - First item: {items[0] if items else 'None'}")
+    return {"debug": "State logged", "itemsCount": len(items)}
+
+async def init_workflow(ctx: Context) -> Dict[str, Any]:
+    """Called at workflow initialization to log initial state."""
+    state: Dict[str, Any] = await ctx.get("state", default={})
+    items = state.get("items", [])
+    print(f"[DEBUG INIT] Workflow starting - Items count: {len(items)}")
+    print(f"[DEBUG INIT] Workflow starting - itemsCreated: {state.get('itemsCreated', 0)}")
+    print(f"[DEBUG INIT] Workflow starting - State keys: {list(state.keys())}")
+    if items and len(items) > 0:
+        print(f"[DEBUG INIT] Workflow starting - First item ID: {items[0].get('id', 'N/A')}")
+    return {"initialized": True}
 
 async def complete_plan(ctx: Context) -> Dict[str, Any]:
     """Mark the plan as completed."""
@@ -270,6 +298,17 @@ agentic_chat_router = get_ag_ui_workflow_router(
         clearChartField1Value,
         removeChartField1,
     ],
-    backend_tools=[set_plan, update_plan_progress, complete_plan],
+    backend_tools=[set_plan, update_plan_progress, complete_plan, debug_state],
     system_prompt=SYSTEM_PROMPT,
+    # Explicitly define the expected state structure
+    initial_state={
+        "items": None,  # Use None to indicate "use incoming value"
+        "globalTitle": None,
+        "globalDescription": None,
+        "lastAction": None,
+        "itemsCreated": None,
+        "planSteps": None,
+        "currentStepIndex": None,
+        "planStatus": None,
+    },
 )
