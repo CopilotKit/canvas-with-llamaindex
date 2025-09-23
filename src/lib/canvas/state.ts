@@ -13,8 +13,13 @@ export const initialState: AgentState = {
 
 export function isNonEmptyAgentState(value: unknown): value is AgentState {
   if (value == null || typeof value !== "object") return false;
-  const keys = Object.keys(value as Record<string, unknown>);
-  return keys.length > 0;
+  const v = value as Partial<AgentState>;
+  const hasItems = Array.isArray(v.items) && v.items.length > 0;
+  const hasTitle = typeof v.globalTitle === "string" && v.globalTitle.trim().length > 0;
+  const hasDesc = typeof v.globalDescription === "string" && v.globalDescription.trim().length > 0;
+  const hasPlan = Array.isArray(v.planSteps) && v.planSteps.length > 0;
+  // Consider it non-empty only if any meaningful content is present
+  return Boolean(hasItems || hasTitle || hasDesc || hasPlan);
 }
 
 export function defaultDataFor(type: CardType): ItemData {

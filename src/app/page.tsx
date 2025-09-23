@@ -13,8 +13,8 @@ import ShikiHighlighter from "react-shiki/web";
 import { motion, useScroll, useTransform, useMotionValueEvent } from "motion/react";
 import { EmptyState } from "@/components/empty-state";
 import { cn, getContentArg } from "@/lib/utils";
-import type { AgentState, PlanStep, Item, ItemData, ProjectData, EntityData, NoteData, ChartData, CardType } from "@/lib/canvas/types";
-import { initialState, isNonEmptyAgentState } from "@/lib/canvas/state";
+import type { AgentState, PlanStep, Item, ItemData, ProjectData, EntityData, NoteData, ChartData, CardType, ChecklistItem } from "@/lib/canvas/types";
+import { initialState } from "@/lib/canvas/state";
 import { projectAddField4Item, projectSetField4ItemText, projectSetField4ItemDone, projectRemoveField4Item, chartAddField1Metric, chartSetField1Label, chartSetField1Value, chartRemoveField1Metric } from "@/lib/canvas/updates";
 import useMediaQuery from "@/hooks/use-media-query";
 import ItemHeader from "@/components/canvas/ItemHeader";
@@ -26,15 +26,166 @@ export default function CopilotKitPage() {
     initialState,
   });
 
-  // Global cache for the last non-empty agent state
+  // Stable local cache of the last meaningful shared state
   const cachedStateRef = useRef<AgentState>(state ?? initialState);
-  useEffect(() => {
-    if (isNonEmptyAgentState(state)) {
-      cachedStateRef.current = state as AgentState;
+  
+  // Helpers to prefer non-empty values from incoming snapshots while preserving richer cached data
+  const preferNonEmptyString = useCallback((incoming: unknown, cached: string): string => {
+    const s = typeof incoming === "string" ? incoming : undefined;
+    if (typeof s === "string" && s.trim().length > 0) return s;
+    return cached;
+  }, []);
+  
+  const mergeChecklist = useCallback((cached: ProjectData, incoming: ProjectData): Pick<ProjectData, "field4" | "field4_id"> => {
+    const cachedList = Array.isArray(cached.field4) ? cached.field4 : [];
+    const incomingList = Array.isArray(incoming.field4) ? incoming.field4 : [];
+    const byId = new Map<string, ChecklistItem>();
+    for (const c of cachedList) byId.set(c.id, c);
+    for (const n of incomingList) {
+      const prev = byId.get(n.id);
+      if (!prev) {
+        byId.set(n.id, n);
+      } else {
+        byId.set(n.id, {
+          id: n.id,
+          text: preferNonEmptyString(n.text, prev.text),
+          done: typeof n.done === "boolean" ? n.done : prev.done,
+          proposed: typeof n.proposed === "boolean" ? n.proposed : prev.proposed,
+        });
+      }
     }
-  }, [state]);
-  // we use viewState to avoid transient flicker; TODO: troubleshoot and remove this workaround
-  const viewState: AgentState = isNonEmptyAgentState(state) ? (state as AgentState) : cachedStateRef.current;
+    return {
+      field4: Array.from(byId.values()),
+      field4_id: Math.max(cached.field4_id ?? 0, incoming.field4_id ?? 0),
+    };
+  }, [preferNonEmptyString]);
+  
+  const mergeChartMetrics = useCallback((cached: ChartData, incoming: ChartData): ChartData => {
+    const cachedList = Array.isArray(cached.field1) ? cached.field1 : [];
+    const incomingList = Array.isArray(incoming.field1) ? incoming.field1 : [];
+    const byId = new Map<string, { id: string; label: string; value: number | "" }>();
+    for (const c of cachedList) byId.set(c.id, c);
+    for (const n of incomingList) {
+      const prev = byId.get(n.id);
+      if (!prev) {
+        byId.set(n.id, n);
+      } else {
+        byId.set(n.id, {
+          id: n.id,
+          label: preferNonEmptyString(n.label, prev.label),
+          value: typeof n.value === "number" || n.value === "" ? n.value : prev.value,
+        });
+      }
+    }
+    return {
+      ...cached,
+      field1: Array.from(byId.values()),
+      field1_id: Math.max(cached.field1_id ?? 0, incoming.field1_id ?? 0),
+    } as ChartData;
+  }, [preferNonEmptyString]);
+  
+  const mergeItemDataByType = useCallback((cached: ItemData, incoming: ItemData, type: CardType): ItemData => {
+    switch (type) {
+      case "project": {
+        const c = cached as ProjectData;
+        const n = incoming as ProjectData;
+        const checklist = mergeChecklist(c, n);
+        return {
+          ...c,
+          field1: preferNonEmptyString(n.field1, c.field1),
+          field2: preferNonEmptyString(n.field2, c.field2),
+          field3: preferNonEmptyString(n.field3, c.field3),
+          ...checklist,
+        } as ProjectData;
+      }
+      case "entity": {
+        const c = cached as EntityData;
+        const n = incoming as EntityData;
+        return {
+          ...c,
+          field1: preferNonEmptyString(n.field1, c.field1),
+          field2: preferNonEmptyString(n.field2, c.field2),
+          field3: Array.isArray(n.field3) && n.field3.length > 0 ? n.field3 : c.field3,
+          field3_options: Array.isArray(n.field3_options) && n.field3_options.length > 0 ? n.field3_options : c.field3_options,
+        } as EntityData;
+      }
+      case "note": {
+        const c = cached as NoteData;
+        const n = incoming as NoteData;
+        return {
+          ...c,
+          field1: preferNonEmptyString(n.field1, c.field1 ?? ""),
+        } as NoteData;
+      }
+      case "chart": {
+        const c = cached as ChartData;
+        const n = incoming as ChartData;
+        return mergeChartMetrics(c, n) as ChartData;
+      }
+      default:
+        return incoming;
+    }
+  }, [mergeChecklist, mergeChartMetrics, preferNonEmptyString]);
+  
+  const mergeItems = useCallback((cachedItems: Item[], incomingItems: Item[], lastActionVal: string): Item[] => {
+    const cachedById = new Map<string, Item>();
+    for (const it of cachedItems) cachedById.set(it.id, it);
+    const incomingById = new Map<string, Item>();
+    for (const it of incomingItems) incomingById.set(it.id, it);
+    const deletedMatch = /^deleted:(.+)$/.exec(String(lastActionVal || ""));
+    const deletedId = deletedMatch ? deletedMatch[1] : "";
+    const result: Item[] = [];
+    // Preserve cached order
+    for (const it of cachedItems) {
+      if (it.id === deletedId) continue; // honor explicit deletion
+      const incoming = incomingById.get(it.id);
+      if (!incoming) {
+        result.push(it);
+        continue;
+      }
+      const merged: Item = {
+        id: it.id,
+        type: incoming.type || it.type,
+        name: preferNonEmptyString(incoming.name, it.name),
+        subtitle: preferNonEmptyString(incoming.subtitle, it.subtitle),
+        data: mergeItemDataByType(it.data, incoming.data, (incoming.type || it.type) as CardType),
+      };
+      result.push(merged);
+      incomingById.delete(it.id);
+    }
+    // Append any new incoming items (e.g., newly created)
+    for (const remaining of incomingById.values()) {
+      result.push(remaining);
+    }
+    return result;
+  }, [mergeItemDataByType, preferNonEmptyString]);
+  // Merge incoming snapshots with cached state to prevent unintended clears
+  useEffect(() => {
+    const incoming = (state ?? undefined) as AgentState | undefined;
+    const cached = cachedStateRef.current ?? initialState;
+    if (!incoming) return; // nothing to merge
+    const incomingItemsArr = Array.isArray(incoming.items) ? (incoming.items as Item[]) : [];
+    const mergedItems = incomingItemsArr.length > 0
+      ? mergeItems(cached.items, incomingItemsArr, String(incoming.lastAction || cached.lastAction || ""))
+      : cached.items;
+    const merged: AgentState = {
+      items: mergedItems,
+      globalTitle: preferNonEmptyString(incoming.globalTitle, cached.globalTitle),
+      globalDescription: preferNonEmptyString(incoming.globalDescription, cached.globalDescription),
+      lastAction: preferNonEmptyString(incoming.lastAction, String(cached.lastAction || "")),
+      itemsCreated: Math.max(
+        Number.isFinite(incoming.itemsCreated as number) ? (incoming.itemsCreated as number) : 0,
+        Number.isFinite(cached.itemsCreated as number) ? (cached.itemsCreated as number) : 0,
+      ),
+      // Keep plan updates from incoming
+      planSteps: Array.isArray(incoming.planSteps) ? (incoming.planSteps as PlanStep[]) : cached.planSteps,
+      currentStepIndex: typeof incoming.currentStepIndex === "number" ? incoming.currentStepIndex : cached.currentStepIndex,
+      planStatus: typeof incoming.planStatus === "string" ? incoming.planStatus : cached.planStatus,
+    };
+    cachedStateRef.current = merged;
+  }, [state, mergeItems, preferNonEmptyString]);
+  // Read-only view derived from the stable cache to eliminate flicker
+  const viewState: AgentState = cachedStateRef.current;
 
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const [showJsonView, setShowJsonView] = useState<boolean>(false);
