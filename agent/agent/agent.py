@@ -150,7 +150,7 @@ async def set_plan(
             state["planStatus"] = "failed"
         state["planSteps"] = plan_steps
         ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
-        await ctx.set(state)
+        await ctx.set("state", state)
         return {"initialized": bool(plan_steps), "steps": safe_steps}
     except Exception as e:
         # On error, mark the plan as failed immediately
@@ -165,7 +165,7 @@ async def set_plan(
         except Exception:
             pass
         ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
-        await ctx.set(state)
+        await ctx.set("state", state)
         return {"initialized": False, "error": str(e)}
 
 
@@ -200,7 +200,7 @@ async def update_plan_progress(
             # leave as-is
             pass
         ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
-        await ctx.set(state)
+        await ctx.set("state", state)
         return {"updated": True, "index": step_index, "status": status, "note": note}
     return {"updated": False, "index": step_index, "status": status, "note": note}
 
@@ -215,7 +215,7 @@ async def complete_plan(ctx: Context) -> Dict[str, Any]:
     state["planStatus"] = "completed"
     state["currentStepIndex"] = max(0, len(steps) - 1) if steps else -1
     ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
-    await ctx.set(state)
+    await ctx.set("state", state)
     return {"completed": True}
 
 
