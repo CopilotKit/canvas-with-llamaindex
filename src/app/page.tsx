@@ -60,6 +60,28 @@ export default function CopilotKitPage() {
   
   // Use stable view state to prevent flicker during rapid transitions
   const viewState: AgentState = stableViewState;
+  
+  // Ensure agent state is synchronized with view state (with debounce)
+  const lastSyncTimeRef = useRef<number>(0);
+  useEffect(() => {
+    if (state && viewState) {
+      const stateItems = (state as AgentState).items ?? [];
+      const viewItems = viewState.items ?? [];
+      
+      // If there's a mismatch and viewState has items but agent state is empty, sync it
+      if (viewItems.length > 0 && stateItems.length === 0) {
+        const now = Date.now();
+        const timeSinceLastSync = now - lastSyncTimeRef.current;
+        
+        // Only sync if it's been more than 500ms since last sync
+        if (timeSinceLastSync > 500) {
+          console.log(`[State Sync] Agent state is empty but view has ${viewItems.length} items. Syncing...`);
+          setState(viewState);
+          lastSyncTimeRef.current = now;
+        }
+      }
+    }
+  }, [state, viewState, setState]);
 
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const [showJsonView, setShowJsonView] = useState<boolean>(false);
@@ -76,6 +98,8 @@ export default function CopilotKitPage() {
   // Strong idempotency during plan execution: allow only one creation per type while plan runs
   const createdByTypeRef = useRef<Partial<Record<CardType, string>>>({});
   const prevPlanStatusRef = useRef<string | null>(null);
+  // Track created items across all agent runs to prevent duplicates
+  const globalCreatedItemsRef = useRef<Map<string, string>>(new Map());
 
   // Reset per-plan idempotency map on plan start/end or when plan definition changes
   useEffect(() => {
@@ -183,9 +207,14 @@ export default function CopilotKitPage() {
       const gTitle = viewState.globalTitle ?? "";
       const gDesc = viewState.globalDescription ?? "";
       const summary = items
-        .slice(0, 5)
-        .map((p: Item) => `id=${p.id} • name=${p.name} • type=${p.type}`)
+        .map((p: Item) => `id=${p.id} • name="${p.name || '(unnamed)'}" • type=${p.type}`)
         .join("\n");
+      const itemsByType = {
+        project: items.filter(i => i.type === 'project').length,
+        entity: items.filter(i => i.type === 'entity').length,
+        note: items.filter(i => i.type === 'note').length,
+        chart: items.filter(i => i.type === 'chart').length,
+      };
       const fieldSchema = [
         "FIELD SCHEMA (authoritative):",
         "- project.data:",
@@ -206,6 +235,9 @@ export default function CopilotKitPage() {
       const toolUsageHints = [
         "TOOL USAGE HINTS:",
         "- To create cards, call createItem with { type: 'project' | 'entity' | 'note' | 'chart', name?: string } and use returned id.",
+        "- IMPORTANT: createItem is IDEMPOTENT - it will return existing item ID if already created with same type/name.",
+        "- DO NOT create multiple items of the same type unless explicitly requested.",
+        "- When asked for '4 cards' (project, entity, note, chart), create EXACTLY 4, not 16 or 20.",
         "- Prefer calling specific actions: setProjectField1, setProjectField2, setProjectField3, addProjectChecklistItem, setProjectChecklistItem, removeProjectChecklistItem.",
         "- field2 values: 'Option A' | 'Option B' | 'Option C' | '' (empty clears).",
         "- field3 accepts natural dates (e.g., 'tomorrow', '2025-01-30'); it will be normalized to YYYY-MM-DD.",
@@ -215,17 +247,21 @@ export default function CopilotKitPage() {
         "LOOP CONTROL: When asked to 'add a couple' items, add at most 2 and stop. Avoid repeated calls to the same mutating tool in one turn.",
         "RANDOMIZATION: If the user specifically asks for random/mock values, you MAY generate and set them right away using the tools (do not block for more details).",
         "VERIFICATION: After tools run, re-read the latest state and confirm what actually changed.",
+        "DUPLICATE PREVENTION: The system prevents duplicates automatically. Trust the returned IDs.",
       ].join("\n");
       return [
         "CRITICAL: ALWAYS USE THE CURRENT SHARED STATE AS GROUND TRUTH.",
         "The current state has " + items.length + " items. DO NOT clear or reset this state.",
         "When creating new items, ADD them to the existing items list.",
-        "If a command does not specify which item to change, ask the user to clarify before proceeding.",
-        `Global Title: ${gTitle || "(none)"}`,
-        `Global Description: ${gDesc || "(none)"}`,
-        "Current Items in Canvas:",
+        "IMPORTANT: The agent's initial_state may be empty, but the actual current state is:",
+        `- Total items in canvas: ${items.length}`,
+        `- Projects: ${itemsByType.project}, Entities: ${itemsByType.entity}, Notes: ${itemsByType.note}, Charts: ${itemsByType.chart}`,
+        `- Global Title: "${gTitle || ""}"`,
+        `- Global Description: "${gDesc || ""}"`,
+        "EXISTING ITEMS (DO NOT RECREATE THESE):",
         summary || "(none)",
-        "Total items: " + items.length,
+        "When asked to create a 'new project' and projects already exist, create a NEW one with a different name.",
+        "The createItem function will automatically prevent duplicates with same type/name.",
         fieldSchema,
         toolUsageHints,
       ].join("\n");
@@ -326,35 +362,40 @@ export default function CopilotKitPage() {
   const updateItem = useCallback(
     (itemId: string, updates: Partial<Item>) => {
       setState((prev) => {
-        const base = prev ?? initialState;
+        // Always use the most current state
+        const base = prev ?? viewState ?? initialState;
         const items: Item[] = base.items ?? [];
+        console.log(`[updateItem] Working with ${items.length} existing items`);
         const nextItems = items.map((p) => (p.id === itemId ? { ...p, ...updates } : p));
         return { ...base, items: nextItems } as AgentState;
       });
     },
-    [setState]
+    [setState, viewState]
   );
 
   const updateItemData = useCallback(
     (itemId: string, updater: (prev: ItemData) => ItemData) => {
       setState((prev) => {
-        const base = prev ?? initialState;
+        // Always use the most current state
+        const base = prev ?? viewState ?? initialState;
         const items: Item[] = base.items ?? [];
+        console.log(`[updateItemData] Working with ${items.length} existing items`);
         const nextItems = items.map((p) => (p.id === itemId ? { ...p, data: updater(p.data) } : p));
         return { ...base, items: nextItems } as AgentState;
       });
     },
-    [setState]
+    [setState, viewState]
   );
 
   const deleteItem = useCallback((itemId: string) => {
     setState((prev) => {
-      const base = prev ?? initialState;
+      const base = prev ?? viewState ?? initialState;
       const existed = (base.items ?? []).some((p) => p.id === itemId);
       const items: Item[] = (base.items ?? []).filter((p) => p.id !== itemId);
+      console.log(`[deleteItem] Deleting from ${base.items?.length ?? 0} items, ${items.length} remaining`);
       return { ...base, items, lastAction: existed ? `deleted:${itemId}` : `not_found:${itemId}` } as AgentState;
     });
-  }, [setState]);
+  }, [setState, viewState]);
 
   // Checklist item local helper removed; Copilot actions handle checklist CRUD
 
@@ -455,7 +496,7 @@ export default function CopilotKitPage() {
       { name: "title", type: "string", required: true, description: "The new global title/name." },
     ],
     handler: ({ title }: { title: string }) => {
-      setState((prev) => ({ ...(prev ?? initialState), globalTitle: title }));
+      setState((prev) => ({ ...(prev ?? viewState ?? initialState), globalTitle: title }));
     },
   });
 
@@ -467,7 +508,7 @@ export default function CopilotKitPage() {
       { name: "description", type: "string", required: true, description: "The new global description/subtitle." },
     ],
     handler: ({ description }: { description: string }) => {
-      setState((prev) => ({ ...(prev ?? initialState), globalDescription: description }));
+      setState((prev) => ({ ...(prev ?? viewState ?? initialState), globalDescription: description }));
     },
   });
 
@@ -934,44 +975,62 @@ export default function CopilotKitPage() {
     handler: ({ type, name }: { type: string; name?: string }) => {
       const t = (type as CardType);
       const normalized = (name ?? "").trim();
-      const planStatus = String(viewState?.planStatus ?? "");
-
-      // Per-plan strict idempotency: during an active plan, only one creation per type
-      if (planStatus === "in_progress") {
-        // If any item of this type already exists, return its id instead of creating another
-        const existingOfType = (viewState.items ?? initialState.items).find((it) => it.type === t);
-        if (existingOfType) {
-          createdByTypeRef.current[t] = existingOfType.id;
-          return existingOfType.id;
-        }
-        const existingCreatedId = createdByTypeRef.current[t];
-        if (existingCreatedId) {
-          return existingCreatedId;
+      
+      // Get the most current items from either state or viewState
+      const currentItems = viewState?.items ?? state?.items ?? [];
+      console.log(`[createItem] Current items count: ${currentItems.length}`);
+      
+      // Global deduplication key
+      const dedupeKey = `${t}:${normalized || 'unnamed'}`;
+      
+      // Check global creation tracking first
+      const globallyCreatedId = globalCreatedItemsRef.current.get(dedupeKey);
+      if (globallyCreatedId) {
+        // Verify this item still exists
+        const stillExists = currentItems.some(it => it.id === globallyCreatedId);
+        if (stillExists) {
+          console.log(`[createItem] Item already created globally with ID ${globallyCreatedId}`);
+          return globallyCreatedId;
         }
       }
-      // 1) Name-based idempotency: if an item with same type+name exists, return it
+      
+      // Check if item with same type and name already exists
       if (normalized) {
-        const existing = (viewState.items ?? initialState.items).find((it) => it.type === t && (it.name ?? "").trim() === normalized);
+        const existing = currentItems.find((it) => 
+          it.type === t && (it.name ?? "").trim().toLowerCase() === normalized.toLowerCase()
+        );
         if (existing) {
+          console.log(`[createItem] Found existing item ${existing.id} with same type and name`);
+          globalCreatedItemsRef.current.set(dedupeKey, existing.id);
           return existing.id;
         }
       }
-      // 2) Per-run throttle: avoid duplicate creations within a short window for identical type+name
+      
+      // For unnamed items, check if we already have enough of this type
+      if (!normalized) {
+        const existingOfType = currentItems.filter(it => it.type === t);
+        if (existingOfType.length >= 5) {
+          console.log(`[createItem] Already have ${existingOfType.length} items of type ${t}, returning first one`);
+          return existingOfType[0].id;
+        }
+      }
+      
+      // Per-run throttle: avoid duplicate creations within a short window
       const now = Date.now();
       const recent = lastCreationRef.current;
-      if (recent && recent.type === t && (recent.name ?? "") === normalized && now - recent.ts < 5000) {
+      if (recent && recent.type === t && (recent.name ?? "") === normalized && now - recent.ts < 1000) {
+        console.log(`[createItem] Throttled duplicate creation, returning ${recent.id}`);
         return recent.id;
       }
       
-      // IMPORTANT: Ensure we preserve existing state when creating new items
-      const currentItems = state?.items ?? viewState?.items ?? [];
-      console.log(`[createItem] Current items count: ${currentItems.length}`);
-      
+      // Create the new item
       const id = addItem(t, name);
       lastCreationRef.current = { type: t, name: normalized, id, ts: now };
-      if (planStatus === "in_progress") {
-        createdByTypeRef.current[t] = id;
-      }
+      globalCreatedItemsRef.current.set(dedupeKey, id);
+      
+      console.log(`[createItem] Created new item ${id} of type ${t} with name "${normalized}"`);
+      
+      // Return the ID with additional info for the agent
       return id;
     },
   });
