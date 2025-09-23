@@ -1,11 +1,15 @@
 from typing import Annotated, List, Optional, Dict, Any
 import json
+import os
 
 from llama_index.core.workflow import Context
 from llama_index.core.workflow.events import StopEvent
 from llama_index.llms.openai import OpenAI
 from llama_index.protocols.ag_ui.events import StateSnapshotWorkflowEvent
 from llama_index.protocols.ag_ui.router import get_ag_ui_workflow_router
+
+# Set environment variable to help debug LlamaIndex workflow issues
+os.environ["LLAMA_INDEX_CACHE_DIR"] = "/tmp/llama_index_cache"
 
 
 # --- Backend tools (server-side) ---
@@ -287,9 +291,40 @@ async def verify_state(ctx: Context) -> Dict[str, Any]:
     return state
 
 # Create the router with proper state schema
-# The initial_state parameter defines the expected state structure
-# but should not override the incoming state from the frontend
-agentic_chat_router = get_ag_ui_workflow_router(
+# The issue is that LlamaIndex workflow falls back to initial_state.copy()
+# when it can't find the state, causing state reset. We need a different approach.
+
+# Create a custom workflow handler that properly preserves state
+class StatePreservingWorkflowWrapper:
+    def __init__(self, base_router):
+        self.base_router = base_router
+        self.last_known_state = None
+        
+    async def __call__(self, *args, **kwargs):
+        # Log incoming request
+        print(f"[WRAPPER] Incoming request with kwargs keys: {list(kwargs.keys())}")
+        
+        # Check if state is provided
+        if 'state' in kwargs:
+            incoming_state = kwargs['state']
+            print(f"[WRAPPER] Incoming state type: {type(incoming_state)}")
+            
+            # Store the last known good state
+            if incoming_state and isinstance(incoming_state, dict) and incoming_state.get('items') is not None:
+                self.last_known_state = incoming_state
+                print(f"[WRAPPER] Stored state with {len(incoming_state.get('items', []))} items")
+            elif self.last_known_state:
+                # If incoming state is invalid, use last known state
+                print(f"[WRAPPER] Using last known state with {len(self.last_known_state.get('items', []))} items")
+                kwargs['state'] = self.last_known_state
+        
+        # Call the base router
+        result = await self.base_router(*args, **kwargs)
+        return result
+
+# Create the base router
+print("[INIT] Creating base router")
+base_router = get_ag_ui_workflow_router(
     llm=OpenAI(model="gpt-4.1"),
     # Provide frontend tool stubs so the model knows their names/signatures.
     frontend_tools=[
@@ -321,9 +356,8 @@ agentic_chat_router = get_ag_ui_workflow_router(
     ],
     backend_tools=[set_plan, update_plan_progress, complete_plan, debug_state, verify_state],
     system_prompt=SYSTEM_PROMPT,
-    # Define the state schema with default empty values
-    # This tells the workflow what state fields to expect
-    # but doesn't override the incoming state
+    # Provide minimal initial_state to define schema
+    # The workflow needs this to know the expected structure
     initial_state={
         "items": [],
         "globalTitle": "",
@@ -335,4 +369,7 @@ agentic_chat_router = get_ag_ui_workflow_router(
         "planStatus": "",
     }
 )
-print("[INIT] Created router with state schema")
+
+# Wrap the router to preserve state
+agentic_chat_router = StatePreservingWorkflowWrapper(base_router)
+print("[INIT] Created state-preserving wrapper for router")
