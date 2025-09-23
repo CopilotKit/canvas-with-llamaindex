@@ -28,10 +28,20 @@ export default function CopilotKitPage() {
     }
   }, []);
   
+  // Use a ref to track the true current state across renders
+  const trueStateRef = useRef<AgentState>(initialState);
+  
   const { state, setState } = useCoAgent<AgentState>({
     name: "sample_agent",
     initialState,
   });
+  
+  // Always update our ref when state changes
+  useEffect(() => {
+    if (state && isNonEmptyAgentState(state)) {
+      trueStateRef.current = state as AgentState;
+    }
+  }, [state]);
 
   // Global cache for the last non-empty agent state
   const cachedStateRef = useRef<AgentState>(state ?? initialState);
@@ -207,12 +217,15 @@ export default function CopilotKitPage() {
         "VERIFICATION: After tools run, re-read the latest state and confirm what actually changed.",
       ].join("\n");
       return [
-        "ALWAYS ANSWER FROM SHARED STATE (GROUND TRUTH).",
+        "CRITICAL: ALWAYS USE THE CURRENT SHARED STATE AS GROUND TRUTH.",
+        "The current state has " + items.length + " items. DO NOT clear or reset this state.",
+        "When creating new items, ADD them to the existing items list.",
         "If a command does not specify which item to change, ask the user to clarify before proceeding.",
         `Global Title: ${gTitle || "(none)"}`,
         `Global Description: ${gDesc || "(none)"}`,
-        "Items (sample):",
+        "Current Items in Canvas:",
         summary || "(none)",
+        "Total items: " + items.length,
         fieldSchema,
         toolUsageHints,
       ].join("\n");
@@ -392,6 +405,8 @@ export default function CopilotKitPage() {
     setState((prev) => {
       const base = prev ?? initialState;
       const items: Item[] = base.items ?? [];
+      console.log(`[addItem] Starting with ${items.length} existing items`);
+      
       // Derive next numeric id robustly from both itemsCreated counter and max existing id
       const maxExisting = items.reduce((max, it) => {
         const parsed = Number.parseInt(String(it.id ?? "0"), 10);
@@ -408,6 +423,7 @@ export default function CopilotKitPage() {
         data: defaultDataFor(t),
       };
       const nextItems = [...items, item];
+      
       // clamp to one per type when plan is active
       const planActive = String(base?.planStatus ?? "") === "in_progress";
       let deduped = nextItems;
@@ -421,6 +437,8 @@ export default function CopilotKitPage() {
           deduped.push(it);
         }
       }
+      
+      console.log(`[addItem] Ending with ${deduped.length} items after adding new item`);
       return { ...base, items: deduped, itemsCreated: nextNumber, lastAction: `created:${createdId}` } as AgentState;
     });
     return createdId;
@@ -944,6 +962,11 @@ export default function CopilotKitPage() {
       if (recent && recent.type === t && (recent.name ?? "") === normalized && now - recent.ts < 5000) {
         return recent.id;
       }
+      
+      // IMPORTANT: Ensure we preserve existing state when creating new items
+      const currentItems = state?.items ?? viewState?.items ?? [];
+      console.log(`[createItem] Current items count: ${currentItems.length}`);
+      
       const id = addItem(t, name);
       lastCreationRef.current = { type: t, name: normalized, id, ts: now };
       if (planStatus === "in_progress") {
