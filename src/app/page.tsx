@@ -21,23 +21,21 @@ import ItemHeader from "@/components/canvas/ItemHeader";
 import NewItemMenu from "@/components/canvas/NewItemMenu";
 
 export default function CopilotKitPage() {
-  // Persist state in localStorage to prevent loss between agent runs
-  const [persistedState, setPersistedState] = useState<AgentState>(() => {
+  // Clean up any leftover localStorage from previous implementation
+  useEffect(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('canvas-state');
-      return saved ? JSON.parse(saved) : initialState;
+      localStorage.removeItem('canvas-state');
     }
-    return initialState;
-  });
+  }, []);
   
   const { state, setState } = useCoAgent<AgentState>({
     name: "sample_agent",
-    initialState: persistedState,
+    initialState,
   });
 
   // Global cache for the last non-empty agent state
-  const cachedStateRef = useRef<AgentState>(state ?? persistedState);
-  const [stableViewState, setStableViewState] = useState<AgentState>(state ?? persistedState);
+  const cachedStateRef = useRef<AgentState>(state ?? initialState);
+  const [stableViewState, setStableViewState] = useState<AgentState>(state ?? initialState);
   
   useEffect(() => {
     if (isNonEmptyAgentState(state)) {
@@ -46,13 +44,6 @@ export default function CopilotKitPage() {
       const timeoutId = setTimeout(() => {
         setStableViewState(state as AgentState);
       }, 50);
-      
-      // Persist state to localStorage
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('canvas-state', JSON.stringify(state));
-        setPersistedState(state as AgentState);
-      }
-      
       return () => clearTimeout(timeoutId);
     }
   }, [state]);
@@ -1217,21 +1208,6 @@ export default function CopilotKitPage() {
                   ? "Canvas"
                   : <>JSON</>
                 }
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                className="ml-2"
-                onClick={() => {
-                  if (window.confirm('Are you sure you want to clear all canvas data?')) {
-                    localStorage.removeItem('canvas-state');
-                    setState(initialState);
-                    setPersistedState(initialState);
-                    setStableViewState(initialState);
-                  }
-                }}
-              >
-                Clear
               </Button>
             </div>
           ) : null}
