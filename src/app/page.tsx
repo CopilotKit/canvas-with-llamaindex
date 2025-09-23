@@ -33,8 +33,10 @@ export default function CopilotKitPage() {
       cachedStateRef.current = state as AgentState;
     }
   }, [state]);
-  // we use viewState to avoid transient flicker; TODO: troubleshoot and remove this workaround
+  // we use viewState to avoid transient flicker and guard against empty snapshots overwriting local state
   const viewState: AgentState = isNonEmptyAgentState(state) ? (state as AgentState) : cachedStateRef.current;
+
+  // Minimal flicker guard only: use cached view state when the hook state is empty
 
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const [showJsonView, setShowJsonView] = useState<boolean>(false);
@@ -191,6 +193,12 @@ export default function CopilotKitPage() {
         "RANDOMIZATION: If the user specifically asks for random/mock values, you MAY generate and set them right away using the tools (do not block for more details).",
         "VERIFICATION: After tools run, re-read the latest state and confirm what actually changed.",
       ].join("\n");
+      const planningHints = [
+        "PLANNING:",
+        "- For multi-step requests, first propose a short plan (2-6 steps) and call set_plan with the step titles.",
+        "- For each step, call update_plan_progress to mark in_progress and then completed/failed with a short note.",
+        "- When all steps are done, call complete_plan and provide a concise summary.",
+      ].join("\n");
       return [
         "ALWAYS ANSWER FROM SHARED STATE (GROUND TRUTH).",
         "If a command does not specify which item to change, ask the user to clarify before proceeding.",
@@ -200,6 +208,7 @@ export default function CopilotKitPage() {
         summary || "(none)",
         fieldSchema,
         toolUsageHints,
+        planningHints,
       ].join("\n");
     })(),
   });
@@ -890,6 +899,7 @@ export default function CopilotKitPage() {
     },
   });
 
+
   useCopilotAction({
     name: "createItem",
     description: "Create a new item.",
@@ -1019,7 +1029,7 @@ export default function CopilotKitPage() {
               return (
                 <div className="p-4 py-3 border-b">
                   <div className="rounded-xl border bg-card p-3">
-                    <div className="mb-1 text-xs font-semibold">Plan <span className="ml-2 rounded-full px-2 py-0.5 text-[10px] font-medium border text-blue-700 border-blue-300 bg-blue-50">in_progress</span></div>
+                    <div className="mb-1 text-xs font-semibold">Plan <span className={cn("ml-2 rounded-full px-2 py-0.5 text-[10px] font-medium border", status === "failed" ? "text-red-700 border-red-300 bg-red-50" : "text-blue-700 border-blue-300 bg-blue-50")}>{status}</span></div>
                     <ol className="space-y-1">
                       {steps.map((s, i) => {
                         const st = String(s?.status ?? "pending").toLowerCase();

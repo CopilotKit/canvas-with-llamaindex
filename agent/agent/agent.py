@@ -6,9 +6,6 @@ from llama_index.protocols.ag_ui.events import StateSnapshotWorkflowEvent
 from llama_index.protocols.ag_ui.router import get_ag_ui_workflow_router
 
 
-# --- Backend tools (server-side) ---
-
-
 # --- Frontend tool stubs (names/signatures only; execution happens in the UI) ---
 
 def createItem(
@@ -131,6 +128,8 @@ def clearChartField1Value(itemId: Annotated[str, "Chart id."], index: Annotated[
 def removeChartField1(itemId: Annotated[str, "Chart id."], index: Annotated[int, "Metric index (0-based)."]) -> str:
     return f"removeChartField1({itemId}, {index})"
 
+# --- Backend tools (server-side) ---
+
 async def set_plan(
     ctx: Context,
     steps: Annotated[List[str], "Step titles to initialize a plan with."],
@@ -231,9 +230,14 @@ SYSTEM_PROMPT = (
     "- For project/entity/chart: treat 'description', 'overview', 'summary', 'caption', 'blurb' as the card subtitle; use setItemSubtitleOrDescription.\n"
     "- For notes: 'content', 'description', 'text', or 'note' refers to note content; use setNoteField1 / appendNoteField1 / clearNoteField1.\n\n"
     "PLANNING POLICY:\n"
-    "- For multi-step requests, first propose a short plan (2-6 steps) and call set_plan with the step titles.\n"
-    "- For each step, call update_plan_progress to mark in_progress and completed/failed with a short note.\n"
+    "- MANDATORY: If the user's request includes more than one action or involves creating/updating multiple items, FIRST propose a short plan (2-6 steps) and call set_plan with the step titles BEFORE any other tool calls.\n"
+    "- For each step, call update_plan_progress to mark in_progress and then completed/failed with a short note.\n"
     "- When all steps are done, call complete_plan and provide a concise summary.\n\n"
+    "DO NOT merely describe a plan in chat. You MUST call the plan tools (set_plan, update_plan_progress, complete_plan) to update the shared plan state so the UI can render progress. If tool calls fail, retry once with corrected arguments; otherwise report the error briefly and stop.\n\n"
+    "ID POLICY:\n"
+    "- Treat values like '0001', '0002', etc. as internal item identifiers produced by tools.\n"
+    "- Do NOT interpret these IDs as user input and do not ask the user what to do with them unless the user explicitly mentions them.\n"
+    "- When creating items, use the returned IDs directly in subsequent tool calls without calling attention to them in chat.\n\n"
     "STRICT GROUNDING RULES:\n"
     "1) ONLY use shared state (items/globalTitle/globalDescription/plan*) as the source of truth.\n"
     "2) Before ANY read or write, assume values may have changed; always read the latest state.\n"
