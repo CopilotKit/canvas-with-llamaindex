@@ -36,7 +36,12 @@ export default function CopilotKitPage() {
   // we use viewState to avoid transient flicker and guard against empty snapshots overwriting local state
   const viewState: AgentState = isNonEmptyAgentState(state) ? (state as AgentState) : cachedStateRef.current;
 
-  // Minimal flicker guard only: use cached view state when the hook state is empty
+  // Ignore transient empty snapshots; keep last good state to prevent flicker
+  useEffect(() => {
+    const s = state as Partial<AgentState> | undefined;
+    if (!s || !isNonEmptyAgentState(s)) return; // do not cache empty snapshots
+    cachedStateRef.current = s as AgentState;
+  }, [state]);
 
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const [showJsonView, setShowJsonView] = useState<boolean>(false);
@@ -780,12 +785,45 @@ export default function CopilotKitPage() {
       { name: "tag", type: "string", required: true, description: "Tag to add." },
       { name: "itemId", type: "string", required: true, description: "Target item id (entity)." },
     ],
-    handler: ({ tag, itemId }: { tag: string; itemId: string }) => {
+    handler: (args: Record<string, unknown>) => {
+      // Derive itemId robustly
+      let itemId = String(args.itemId ?? "").trim();
+      const allItems = (viewState.items ?? initialState.items) as Item[];
+      if (!itemId) {
+        const firstEntity = allItems.find((it) => it.type === "entity");
+        if (!firstEntity) return;
+        itemId = firstEntity.id;
+      }
+
+      // Resolve target entity
+      const entity = allItems.find((it) => it.id === itemId && it.type === "entity");
+      if (!entity) return;
+      const eData = entity.data as EntityData;
+      const current = new Set<string>((eData.field3 ?? []) as string[]);
+      const options = Array.isArray(eData.field3_options) ? (eData.field3_options as string[]) : ["Tag 1", "Tag 2", "Tag 3"];
+
+      // Derive tag from various possible arg shapes
+      let tag: string = String(args.tag ?? "").trim();
+      if (!tag && Array.isArray((args as Record<string, unknown>).tags)) {
+        const arr = (args as Record<string, unknown>).tags as unknown[];
+        tag = String(arr[0] ?? "").trim();
+      }
+      if (!tag && typeof (args as Record<string, unknown>).value === "string") {
+        tag = String((args as Record<string, unknown>).value ?? "").trim();
+      }
+      if (!tag) {
+        // Choose the first available option not already selected
+        const candidate = options.find((t) => !current.has(t)) ?? options[0] ?? "Tag 1";
+        tag = candidate;
+      }
+
+      const finalTag = tag;
+      if (!finalTag) return;
       updateItemData(itemId, (prev) => {
         const e = prev as EntityData;
-        const current = new Set<string>((e.field3 ?? []) as string[]);
-        current.add(tag);
-        return { ...e, field3: Array.from(current) } as EntityData;
+        const nextSet = new Set<string>((e.field3 ?? []) as string[]);
+        nextSet.add(finalTag);
+        return { ...e, field3: Array.from(nextSet) } as EntityData;
       });
     },
   });
@@ -1067,7 +1105,9 @@ export default function CopilotKitPage() {
                 labels={{
                   title: "Agent",
                   initial:
-                    "👋 Share a brief or ask to extract fields. Changes will sync with the canvas in real time.",
+                    planStatusMemo === "in_progress"
+                      ? "Working through the plan…"
+                      : "👋 Share a brief or ask to extract fields. Changes will sync with the canvas in real time.",
                 }}
                 suggestions={[
                   {
@@ -1216,7 +1256,9 @@ export default function CopilotKitPage() {
             labels={{
               title: "Agent",
               initial:
-                "👋 Share a brief or ask to extract fields. Changes will sync with the canvas in real time.",
+                planStatusMemo === "in_progress"
+                  ? "Working through the plan…"
+                  : "👋 Share a brief or ask to extract fields. Changes will sync with the canvas in real time.",
             }}
             suggestions={[
               {
