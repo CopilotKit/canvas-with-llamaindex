@@ -187,6 +187,21 @@ async def update_plan_progress(
         if status == "in_progress":
             state["currentStepIndex"] = step_index
             state["planStatus"] = "in_progress"
+        elif status == "completed":
+            # Auto-advance to the next pending step to prevent loops
+            try:
+                next_idx = -1
+                for i in range(step_index + 1, len(steps)):
+                    if str(steps[i].get("status", "")) == "pending":
+                        next_idx = i
+                        break
+                if next_idx != -1:
+                    steps[next_idx]["status"] = "in_progress"
+                    state["planSteps"] = steps
+                    state["currentStepIndex"] = next_idx
+                    state["planStatus"] = "in_progress"
+            except Exception:
+                pass
         # Aggregate overall status
         statuses = [str(s.get("status", "")) for s in steps]
         if any(s == "failed" for s in statuses):
@@ -259,6 +274,10 @@ SYSTEM_PROMPT = (
     "- After completing the work for a step, mark it completed via update_plan_progress.\n"
     "- On ANY error during a step, immediately call update_plan_progress for the active step with status=\"failed\" and a short note, then stop. Do NOT call complete_plan on failure.\n"
     "- Avoid chat announcements of the plan. Do NOT list the plan steps in chat; rely on the UI tracker. Use chat only for brief error context or the final summary after completion.\n\n"
+    "CHAT SUPPRESSION DURING TOOL CALLS:\n"
+    "- When you call ANY tool (frontend or backend), do NOT include any assistant chat content in the same turn.\n"
+    "- While planStatus is 'in_progress', avoid emitting chat messages except for short error notices. Prefer silent tool calls.\n"
+    "- Never include XML/HTML-like tags such as <tool_call>, <name>, or <arguments> in assistant messages.\n\n"
     "ID POLICY:\n"
     "- Treat values like '0001', '0002', etc. as internal item identifiers produced by tools.\n"
     "- Do NOT interpret these IDs as user input and do not ask the user what to do with them unless the user explicitly mentions them.\n"
