@@ -272,15 +272,4 @@ agentic_chat_router = get_ag_ui_workflow_router(
     ],
     backend_tools=[set_plan, update_plan_progress, complete_plan],
     system_prompt=SYSTEM_PROMPT,
-    initial_state={
-        # Shared state synchronized with the frontend canvas
-        "items": [],
-        "globalTitle": "",
-        "globalDescription": "",
-        "lastAction": "",
-        "itemsCreated": 0,
-        "planSteps": [],
-        "currentStepIndex": -1,
-        "planStatus": "",
-    },
 )
