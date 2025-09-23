@@ -21,20 +21,44 @@ import ItemHeader from "@/components/canvas/ItemHeader";
 import NewItemMenu from "@/components/canvas/NewItemMenu";
 
 export default function CopilotKitPage() {
+  // Persist state in localStorage to prevent loss between agent runs
+  const [persistedState, setPersistedState] = useState<AgentState>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('canvas-state');
+      return saved ? JSON.parse(saved) : initialState;
+    }
+    return initialState;
+  });
+  
   const { state, setState } = useCoAgent<AgentState>({
     name: "sample_agent",
-    initialState,
+    initialState: persistedState,
   });
 
   // Global cache for the last non-empty agent state
-  const cachedStateRef = useRef<AgentState>(state ?? initialState);
+  const cachedStateRef = useRef<AgentState>(state ?? persistedState);
+  const [stableViewState, setStableViewState] = useState<AgentState>(state ?? persistedState);
+  
   useEffect(() => {
     if (isNonEmptyAgentState(state)) {
       cachedStateRef.current = state as AgentState;
+      // Use a small delay to prevent rapid state transitions from causing flicker
+      const timeoutId = setTimeout(() => {
+        setStableViewState(state as AgentState);
+      }, 50);
+      
+      // Persist state to localStorage
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('canvas-state', JSON.stringify(state));
+        setPersistedState(state as AgentState);
+      }
+      
+      return () => clearTimeout(timeoutId);
     }
   }, [state]);
-  // we use viewState to avoid transient flicker; TODO: troubleshoot and remove this workaround
-  const viewState: AgentState = isNonEmptyAgentState(state) ? (state as AgentState) : cachedStateRef.current;
+  
+  // Use stable view state to prevent flicker during rapid transitions
+  const viewState: AgentState = stableViewState;
 
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const [showJsonView, setShowJsonView] = useState<boolean>(false);
@@ -1193,6 +1217,21 @@ export default function CopilotKitPage() {
                   ? "Canvas"
                   : <>JSON</>
                 }
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="ml-2"
+                onClick={() => {
+                  if (window.confirm('Are you sure you want to clear all canvas data?')) {
+                    localStorage.removeItem('canvas-state');
+                    setState(initialState);
+                    setPersistedState(initialState);
+                    setStableViewState(initialState);
+                  }
+                }}
+              >
+                Clear
               </Button>
             </div>
           ) : null}
