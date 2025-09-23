@@ -16,6 +16,7 @@ const runtime = new CopilotRuntime({
   agents: {
     // Our FastAPI endpoint URL
     sample_agent: new HttpAgent({
+      debug: true,
       url: "http://127.0.0.1:9000/run",
     }),
   }
