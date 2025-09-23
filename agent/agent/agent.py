@@ -135,19 +135,38 @@ async def set_plan(
     steps: Annotated[List[str], "Step titles to initialize a plan with."],
 ) -> Dict[str, Any]:
     """Initialize a plan consisting of step descriptions. Resets progress and sets status to 'in_progress'."""
-    state: Dict[str, Any] = await ctx.get("state", default={})
-    plan_steps = [{"title": str(s), "status": "pending"} for s in (steps or [])]
-    if plan_steps:
-        plan_steps[0]["status"] = "in_progress"
-        state["currentStepIndex"] = 0
-        state["planStatus"] = "in_progress"
-    else:
-        state["currentStepIndex"] = -1
-        state["planStatus"] = ""
-    state["planSteps"] = plan_steps
-    ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
-    await ctx.set(state)
-    return {"initialized": True, "steps": steps}
+    try:
+        state: Dict[str, Any] = await ctx.get("state", default={})
+        # Normalize and validate steps
+        safe_steps: List[str] = [str(s) for s in (steps or []) if str(s).strip()]
+        plan_steps = [{"title": s, "status": "pending"} for s in safe_steps]
+        if plan_steps:
+            plan_steps[0]["status"] = "in_progress"
+            state["currentStepIndex"] = 0
+            state["planStatus"] = "in_progress"
+        else:
+            # Mark as failed if we cannot initialize with valid steps
+            state["currentStepIndex"] = -1
+            state["planStatus"] = "failed"
+        state["planSteps"] = plan_steps
+        ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
+        await ctx.set(state)
+        return {"initialized": bool(plan_steps), "steps": safe_steps}
+    except Exception as e:
+        # On error, mark the plan as failed immediately
+        state: Dict[str, Any] = await ctx.get("state", default={})
+        state["planStatus"] = "failed"
+        # If we have steps, mark the first one failed
+        try:
+            steps_list: List[Dict[str, Any]] = list(state.get("planSteps", []) or [])
+            if steps_list:
+                steps_list[0]["status"] = "failed"
+                state["planSteps"] = steps_list
+        except Exception:
+            pass
+        ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
+        await ctx.set(state)
+        return {"initialized": False, "error": str(e)}
 
 
 async def update_plan_progress(
@@ -234,6 +253,12 @@ SYSTEM_PROMPT = (
     "- For each step, call update_plan_progress to mark in_progress and then completed/failed with a short note.\n"
     "- When all steps are done, call complete_plan and provide a concise summary.\n\n"
     "DO NOT merely describe a plan in chat. You MUST call the plan tools (set_plan, update_plan_progress, complete_plan) to update the shared plan state so the UI can render progress. If tool calls fail, retry once with corrected arguments; otherwise report the error briefly and stop.\n\n"
+    "PLAN CALL FORMAT:\n"
+    "- Call set_plan with a JSON array of short step titles, e.g., steps=[\"Create cards\",\"Fill details\",\"Add checklist\",\"Tag entity\",\"Write note\",\"Add metrics\"].\n"
+    "- Immediately mark the active step via update_plan_progress(step_index=<active>, status=\"in_progress\").\n"
+    "- After completing the work for a step, mark it completed via update_plan_progress.\n"
+    "- On ANY error during a step, immediately call update_plan_progress for the active step with status=\"failed\" and a short note, then stop. Do NOT call complete_plan on failure.\n"
+    "- Avoid chat announcements of the plan. Do NOT list the plan steps in chat; rely on the UI tracker. Use chat only for brief error context or the final summary after completion.\n\n"
     "ID POLICY:\n"
     "- Treat values like '0001', '0002', etc. as internal item identifiers produced by tools.\n"
     "- Do NOT interpret these IDs as user input and do not ask the user what to do with them unless the user explicitly mentions them.\n"
