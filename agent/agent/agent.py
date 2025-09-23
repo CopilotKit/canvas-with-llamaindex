@@ -2,6 +2,7 @@ from typing import Annotated, List, Optional, Dict, Any
 import json
 
 from llama_index.core.workflow import Context
+from llama_index.core.workflow.events import StopEvent
 from llama_index.llms.openai import OpenAI
 from llama_index.protocols.ag_ui.events import StateSnapshotWorkflowEvent
 from llama_index.protocols.ag_ui.router import get_ag_ui_workflow_router
@@ -266,8 +267,28 @@ SYSTEM_PROMPT = (
     "1) ONLY use shared state (items/globalTitle/globalDescription/plan*) as the source of truth.\n"
     "2) Before ANY read or write, assume values may have changed; always read the latest state.\n"
     "3) If a command doesn't specify which item to change, ask to clarify.\n"
+    "4) When asked to 'debug the state' or check the state, ALWAYS call the debug_state tool first.\n"
 )
 
+# Create a function to check incoming state
+async def verify_state(ctx: Context) -> Dict[str, Any]:
+    """Verify and log the incoming state at the beginning of each request."""
+    state: Dict[str, Any] = await ctx.get("state", default={})
+    items = state.get("items", [])
+    print(f"[VERIFY] State at request start - Items: {len(items)}, itemsCreated: {state.get('itemsCreated', 0)}")
+    if items:
+        print(f"[VERIFY] First item ID: {items[0].get('id', 'N/A') if items else 'None'}")
+    # Ensure state is preserved
+    if not state:
+        print("[VERIFY] WARNING: State is empty!")
+    
+    # CRITICAL: Ensure state is written back to context
+    await ctx.set("state", state)
+    return state
+
+# Create the router with proper state schema
+# The initial_state parameter defines the expected state structure
+# but should not override the incoming state from the frontend
 agentic_chat_router = get_ag_ui_workflow_router(
     llm=OpenAI(model="gpt-4.1"),
     # Provide frontend tool stubs so the model knows their names/signatures.
@@ -298,17 +319,20 @@ agentic_chat_router = get_ag_ui_workflow_router(
         clearChartField1Value,
         removeChartField1,
     ],
-    backend_tools=[set_plan, update_plan_progress, complete_plan, debug_state],
+    backend_tools=[set_plan, update_plan_progress, complete_plan, debug_state, verify_state],
     system_prompt=SYSTEM_PROMPT,
-    # Explicitly define the expected state structure
+    # Define the state schema with default empty values
+    # This tells the workflow what state fields to expect
+    # but doesn't override the incoming state
     initial_state={
-        "items": None,  # Use None to indicate "use incoming value"
-        "globalTitle": None,
-        "globalDescription": None,
-        "lastAction": None,
-        "itemsCreated": None,
-        "planSteps": None,
-        "currentStepIndex": None,
-        "planStatus": None,
-    },
+        "items": [],
+        "globalTitle": "",
+        "globalDescription": "",
+        "lastAction": "",
+        "itemsCreated": 0,
+        "planSteps": [],
+        "currentStepIndex": -1,
+        "planStatus": "",
+    }
 )
+print("[INIT] Created router with state schema")
