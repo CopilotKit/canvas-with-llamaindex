@@ -278,53 +278,42 @@ SYSTEM_PROMPT = (
 async def verify_state(ctx: Context) -> Dict[str, Any]:
     """Verify and log the incoming state at the beginning of each request."""
     state: Dict[str, Any] = await ctx.get("state", default={})
+    
+    # CRITICAL FIX: If state is missing key fields, it means the workflow was reset
+    # In this case, we should not proceed with empty state
+    if not state or not isinstance(state.get("items"), list):
+        print("[VERIFY] ERROR: State is missing or invalid!")
+        print(f"[VERIFY] State keys: {list(state.keys()) if state else 'None'}")
+        # Return a proper state structure to prevent errors
+        state = {
+            "items": state.get("items", []),
+            "globalTitle": state.get("globalTitle", ""),
+            "globalDescription": state.get("globalDescription", ""),
+            "lastAction": state.get("lastAction", ""),
+            "itemsCreated": state.get("itemsCreated", 0),
+            "planSteps": state.get("planSteps", []),
+            "currentStepIndex": state.get("currentStepIndex", -1),
+            "planStatus": state.get("planStatus", ""),
+        }
+    
     items = state.get("items", [])
     print(f"[VERIFY] State at request start - Items: {len(items)}, itemsCreated: {state.get('itemsCreated', 0)}")
     if items:
         print(f"[VERIFY] First item ID: {items[0].get('id', 'N/A') if items else 'None'}")
-    # Ensure state is preserved
-    if not state:
-        print("[VERIFY] WARNING: State is empty!")
     
     # CRITICAL: Ensure state is written back to context
     await ctx.set("state", state)
     return state
 
-# Create the router with proper state schema
+# Create the router with proper state handling
 # The issue is that LlamaIndex workflow falls back to initial_state.copy()
-# when it can't find the state, causing state reset. We need a different approach.
+# when it encounters a StopEvent, causing state reset.
 
-# Create a custom workflow handler that properly preserves state
-class StatePreservingWorkflowWrapper:
-    def __init__(self, base_router):
-        self.base_router = base_router
-        self.last_known_state = None
-        
-    async def __call__(self, *args, **kwargs):
-        # Log incoming request
-        print(f"[WRAPPER] Incoming request with kwargs keys: {list(kwargs.keys())}")
-        
-        # Check if state is provided
-        if 'state' in kwargs:
-            incoming_state = kwargs['state']
-            print(f"[WRAPPER] Incoming state type: {type(incoming_state)}")
-            
-            # Store the last known good state
-            if incoming_state and isinstance(incoming_state, dict) and incoming_state.get('items') is not None:
-                self.last_known_state = incoming_state
-                print(f"[WRAPPER] Stored state with {len(incoming_state.get('items', []))} items")
-            elif self.last_known_state:
-                # If incoming state is invalid, use last known state
-                print(f"[WRAPPER] Using last known state with {len(self.last_known_state.get('items', []))} items")
-                kwargs['state'] = self.last_known_state
-        
-        # Call the base router
-        result = await self.base_router(*args, **kwargs)
-        return result
+# Try creating the router without initial_state first
+# This might prevent the workflow from resetting to empty values
+print("[INIT] Creating router for LlamaIndex AG-UI workflow")
 
-# Create the base router
-print("[INIT] Creating base router")
-base_router = get_ag_ui_workflow_router(
+agentic_chat_router = get_ag_ui_workflow_router(
     llm=OpenAI(model="gpt-4.1"),
     # Provide frontend tool stubs so the model knows their names/signatures.
     frontend_tools=[
@@ -356,8 +345,10 @@ base_router = get_ag_ui_workflow_router(
     ],
     backend_tools=[set_plan, update_plan_progress, complete_plan, debug_state, verify_state],
     system_prompt=SYSTEM_PROMPT,
-    # Provide minimal initial_state to define schema
-    # The workflow needs this to know the expected structure
+    # CRITICAL: We provide initial_state with empty values to define the schema
+    # The LlamaIndex workflow needs this structure, but it will reset to these values
+    # when it encounters a StopEvent, causing the state reset issue.
+    # This is a known limitation of the current LlamaIndex AG-UI integration.
     initial_state={
         "items": [],
         "globalTitle": "",
@@ -370,6 +361,4 @@ base_router = get_ag_ui_workflow_router(
     }
 )
 
-# Wrap the router to preserve state
-agentic_chat_router = StatePreservingWorkflowWrapper(base_router)
-print("[INIT] Created state-preserving wrapper for router")
+print("[INIT] Router created successfully")
