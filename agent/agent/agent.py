@@ -11,39 +11,125 @@ from llama_index.protocols.ag_ui.router import get_ag_ui_workflow_router
 
 # --- Frontend tool stubs (names/signatures only; execution happens in the UI) ---
 
-def createItem(
+async def createItem(
+    ctx: Context,
     type: Annotated[str, "One of: project, entity, note, chart."],
     name: Annotated[Optional[str], "Optional item name."] = None,
 ) -> str:
     """Create a new canvas item and return its id."""
-    return f"createItem({type}, {name})"
+    state: Dict[str, Any] = await ctx.get("state", default={})
+    items = state.get("items", [])
+    items_created = state.get("itemsCreated", 0)
+    
+    # Generate next ID
+    max_existing = max([int(item.get("id", "0")) for item in items], default=0)
+    next_number = max(items_created, max_existing) + 1
+    item_id = str(next_number).zfill(4)
+    
+    # Create default data based on type
+    if type == "project":
+        data = {"field1": "", "field2": "", "field3": "", "field4": [], "field4_id": 0}
+    elif type == "entity":
+        data = {"field1": "", "field2": "", "field3": [], "field3_options": ["Tag 1", "Tag 2", "Tag 3"]}
+    elif type == "note":
+        data = {"field1": ""}
+    elif type == "chart":
+        data = {"field1": [], "field1_id": 0}
+    else:
+        data = {"content": ""}
+    
+    # Create new item
+    new_item = {
+        "id": item_id,
+        "type": type,
+        "name": name.strip() if name and name.strip() else "",
+        "subtitle": "",
+        "data": data
+    }
+    
+    items.append(new_item)
+    state["items"] = items
+    state["itemsCreated"] = next_number
+    state["lastAction"] = f"created:{item_id}"
+    
+    ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
+    await ctx.store.set("state", state)
+    return item_id
 
-def deleteItem(
+async def deleteItem(
+    ctx: Context,
     itemId: Annotated[str, "Target item id."],
 ) -> str:
     """Delete an item by id."""
-    return f"deleteItem({itemId})"
+    state: Dict[str, Any] = await ctx.get("state", default={})
+    items = state.get("items", [])
+    
+    # Check if item exists
+    existed = any(item.get("id") == itemId for item in items)
+    
+    # Filter out the item
+    items = [item for item in items if item.get("id") != itemId]
+    state["items"] = items
+    state["lastAction"] = f"deleted:{itemId}" if existed else f"not_found:{itemId}"
+    
+    ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
+    await ctx.store.set("state", state)
+    return state["lastAction"]
 
-def setItemName(
+async def setItemName(
+    ctx: Context,
     name: Annotated[str, "New item name/title."],
     itemId: Annotated[str, "Target item id."],
 ) -> str:
     """Set an item's name."""
-    return f"setItemName(name, {itemId})"
+    state: Dict[str, Any] = await ctx.get("state", default={})
+    items = state.get("items", [])
+    
+    # Update the item name
+    for item in items:
+        if item.get("id") == itemId:
+            item["name"] = name
+            break
+    
+    state["items"] = items
+    ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
+    await ctx.store.set("state", state)
+    return f"setItemName({name}, {itemId})"
 
-def setItemSubtitleOrDescription(
+async def setItemSubtitleOrDescription(
+    ctx: Context,
     subtitle: Annotated[str, "Item subtitle/short description."],
     itemId: Annotated[str, "Target item id."],
 ) -> str:
     """Set an item's subtitle/description (not data fields)."""
+    state: Dict[str, Any] = await ctx.get("state", default={})
+    items = state.get("items", [])
+    
+    # Update the item subtitle
+    for item in items:
+        if item.get("id") == itemId:
+            item["subtitle"] = subtitle
+            break
+    
+    state["items"] = items
+    ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
+    await ctx.store.set("state", state)
     return f"setItemSubtitleOrDescription({subtitle}, {itemId})"
 
-def setGlobalTitle(title: Annotated[str, "New global title."]) -> str:
+async def setGlobalTitle(ctx: Context, title: Annotated[str, "New global title."]) -> str:
     """Set the global canvas title."""
+    state: Dict[str, Any] = await ctx.get("state", default={})
+    state["globalTitle"] = title
+    ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
+    await ctx.store.set("state", state)
     return f"setGlobalTitle({title})"
 
-def setGlobalDescription(description: Annotated[str, "New global description."]) -> str:
+async def setGlobalDescription(ctx: Context, description: Annotated[str, "New global description."]) -> str:
     """Set the global canvas description."""
+    state: Dict[str, Any] = await ctx.get("state", default={})
+    state["globalDescription"] = description
+    ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
+    await ctx.store.set("state", state)
     return f"setGlobalDescription({description})"
 
 # Note actions
@@ -147,7 +233,7 @@ async def set_plan(
         state["planStatus"] = ""
     state["planSteps"] = plan_steps
     ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
-    await ctx.set(state)
+    await ctx.store.set("state", state)
     return {"initialized": True, "steps": steps}
 
 
@@ -182,7 +268,7 @@ async def update_plan_progress(
             # leave as-is
             pass
         ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
-        await ctx.set(state)
+        await ctx.store.set("state", state)
         return {"updated": True, "index": step_index, "status": status, "note": note}
     return {"updated": False, "index": step_index, "status": status, "note": note}
 
@@ -197,7 +283,7 @@ async def complete_plan(ctx: Context) -> Dict[str, Any]:
     state["planStatus"] = "completed"
     state["currentStepIndex"] = max(0, len(steps) - 1) if steps else -1
     ctx.write_event_to_stream(StateSnapshotWorkflowEvent(snapshot=state))
-    await ctx.set(state)
+    await ctx.store.set("state", state)
     return {"completed": True}
 
 
