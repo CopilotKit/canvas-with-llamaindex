@@ -49,7 +49,11 @@ yarn install
 bun install
 ```
 
-2. Install Python dependencies for the LlamaIndex agent:
+2. Install Python dependencies for the LlamaIndex agent (requires uv).
+   If you don't have uv installed, install it first using one of the following:
+   - macOS (Homebrew): `brew install uv`
+   - macOS/Linux (official installer): `curl -LsSf https://astral.sh/uv/install.sh | sh`
+   - Or with pipx: `pipx install uv`
 ```bash
 # Using pnpm
 pnpm install:agent
